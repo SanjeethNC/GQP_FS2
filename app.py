@@ -16,7 +16,7 @@ logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
 # Step 1: Set up OpenAI API Key
-os.environ["OPENAI_API_KEY"] = "sk-svcacct-QsCZJG1m7apYpNXmYDj73kS-eon0tOJ9Iy6XuNwWD8dH3IDn9QM_OgxlYV-O2-PlAET3BlbkFJ5LFfldkzioy0xrvORw_jOaQo2acpnCix3KApdmur4QmECN1t17iJA0nBrv6cSS74MA"  # Replace with your key
+os.environ["OPENAI_API_KEY"] = "your_api_key"  # Replace with your key
 
 # Step 2: Define your ChromaDB client and collection
 chroma_db_path = "Chroma_db_storage"
