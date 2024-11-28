@@ -1,14 +1,45 @@
-# app.py
-
 from flask import Flask, request, jsonify
-from chroma_retrieval import multi_retrieve_section
 from werkzeug.exceptions import HTTPException, BadRequest
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import LLMChainExtractor
+from langchain_openai import OpenAI
+from langchain_community.vectorstores import Chroma
+from langchain.vectorstores import Chroma as LangChainChroma
+from langchain_community.embeddings import OpenAIEmbeddings
+import os
 import logging
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+
+# Initialize Flask app
 app = Flask(__name__)
 
-# Configure logging for debugging and error tracking
-logging.basicConfig(level=logging.INFO)
+# Step 1: Set up OpenAI API Key
+os.environ["OPENAI_API_KEY"] = "sk-svcacct-QsCZJG1m7apYpNXmYDj73kS-eon0tOJ9Iy6XuNwWD8dH3IDn9QM_OgxlYV-O2-PlAET3BlbkFJ5LFfldkzioy0xrvORw_jOaQo2acpnCix3KApdmur4QmECN1t17iJA0nBrv6cSS74MA"  # Replace with your key
+
+# Step 2: Define your ChromaDB client and collection
+chroma_db_path = "Chroma_db_storage"
+collection_name = "openai_sds_embeddings_metadata"
+embedding_model = OpenAIEmbeddings()
+
+vector_store = LangChainChroma(
+    persist_directory=chroma_db_path,
+    embedding_function=embedding_model,
+    collection_name=collection_name
+)
+
+# Step 3: Set up ContextualCompressionRetriever
+llm = OpenAI(temperature=0)  # Low-temperature LLM for accurate retrieval
+#import chatopenAI for using GPT 4 and 4o and try hyperparameters
+
+compressor = LLMChainExtractor.from_llm(llm)
+retriever = vector_store.as_retriever(
+    search_kwargs={"k": 10}  # Retrieve up to 10 results
+)
+compression_retriever = ContextualCompressionRetriever(
+    base_compressor=compressor, base_retriever=retriever
+)
 
 # Standard error responses
 def error_response(message, status_code=400):
@@ -19,7 +50,7 @@ def error_response(message, status_code=400):
         'status_code': status_code
     }), status_code
 
-# Basic health check endpoint
+# Health check endpoint
 @app.route('/api/health', methods=['GET'])
 def health_check():
     return jsonify({
@@ -27,57 +58,80 @@ def health_check():
         'message': 'API is up and running!'
     })
 
-# Main SDS retrieval endpoint
+# SDS retrieval endpoint
 @app.route('/api/sds', methods=['GET'])
 def get_sds_content():
     try:
         # Extract query parameters
         product_name = request.args.get('product_name')
         supplier = request.args.get('supplier')
-        section_id = request.args.get('section_id', type=int)
-        query_parameters = request.args.get('query_parameters')
-
-        # Convert query_parameters to a list if provided
-        if query_parameters:
-            query_parameters = query_parameters.split(',')
+        section_id = request.args.get('section_id')  # Accept comma-separated input
+        query = request.args.get('query')
 
         # Validate required parameters
-        if not product_name:
-            raise BadRequest("Missing required parameter: 'product_name'")
+        if not product_name or not query or not supplier:
+            raise BadRequest("Missing required parameters: 'product_name' and/or 'query' and/or supplier")
 
-        # Retrieve results
-        results = multi_retrieve_section(
-            product_name=product_name,
-            supplier=supplier,
-            section_id=section_id,
-            query_parameters=query_parameters
-        )
+        # Parse section_id into a list if provided
+        section_ids = None
+        if section_id:
+            try:
+                section_ids = [int(s.strip()) for s in section_id.split(",")]
+            except ValueError:
+                raise BadRequest("Invalid section_id format. Must be a comma-separated list of integers.")
+
+        # Log parameters for debugging
+        logging.info(f"Request parameters - product_name: {product_name}, supplier: {supplier}, section_id: {section_id}, query: {query}")
+
+        # Construct filter for retrieval
+        filter_criteria = {
+            "$and": [{"product_name": {"$eq": product_name}}]
+        }
+        if supplier:
+            filter_criteria["$and"].append({"supplier": {"$eq": supplier}})
+        if section_ids:
+            filter_criteria["$and"].append({"section_id": {"$in": section_ids}})
+
+        # Log filter criteria
+        logging.info(f"Filter criteria: {filter_criteria}")
+
+        # Update retriever with filter
+        retriever.search_kwargs["filter"] = filter_criteria
+
+        # Retrieve compressed documents
+        compressed_docs = compression_retriever.invoke(query)
+
+        # Log retrieved documents
+        logging.info(f"Retrieved documents: {compressed_docs}")
 
         # If no results are found
-        if not results:
+        if not compressed_docs:
             return error_response("No matching SDS content found.", 404)
+
+        # Format results
+        results = [
+            {"content": doc.page_content, "metadata": doc.metadata}
+            for doc in compressed_docs
+        ]
 
         # Successful response
         return jsonify({
             'status': 'success',
             'data': {
-                'count': len(results) if isinstance(results, list) else 1,
+                'count': len(results),
                 'results': results
             }
         })
 
     except BadRequest as e:
-        # Handle specific missing or bad request errors
         logging.error(f"BadRequest: {e}")
         return error_response(str(e), 400)
 
     except HTTPException as e:
-        # Handle other HTTP-related exceptions
         logging.error(f"HTTPException: {e}")
         return error_response(e.description, e.code)
 
     except Exception as e:
-        # Handle unexpected errors and log them
         logging.error(f"Unexpected error: {str(e)}")
         return error_response("An unexpected error occurred. Please try again later.", 500)
 
