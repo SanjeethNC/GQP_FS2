@@ -3,6 +3,8 @@
 import openai
 import chromadb
 import pandas as pd
+import logging
+import time
 
 # Define your ChromaDB client and collection as a global variable
 chroma_db_path = "Chroma_db_storage"
@@ -13,7 +15,7 @@ collection_name = "openai_sds_embeddings_metadata"
 try:
     collection = client.get_collection(collection_name)
     print(f"Collection '{collection_name}' loaded successfully.")
-except chromadb.errors.InvalidCollectionException:
+except ValueError:  # Collection doesn't exist
     collection = client.create_collection(collection_name)
     print(f"Collection '{collection_name}' created successfully.")
 
@@ -36,17 +38,6 @@ SECTION_MAPPING = {
     15: "Regulatory information",
     16: "Other information"
 }
-
-# Function to generate embeddings
-def get_embedding(text, model="text-embedding-ada-002"):
-    """Generates an embedding for a given text using OpenAI API."""
-    try:
-        response = openai.Embedding.create(input=text, model=model)
-        print("Embedding generated successfully.")
-        return response['data'][0]['embedding']
-    except Exception as e:
-        print(f"Embedding error: {e}")
-        return None
 
 # Function to generate processed metadata for each row
 def generate_processed_metadata(df):
@@ -73,31 +64,79 @@ def generate_processed_metadata(df):
     print("Processed metadata generated successfully.")
     return df
 
-# Function to store metadata and embeddings in ChromaDB
-def store_sds_documents_to_chromadb(df):
-    """Stores each section of each document in ChromaDB along with embeddings and metadata."""
+# Setup logging configuration
+logging.basicConfig(filename='chromadb_errors.log', level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+
+# Function to generate embeddings
+def get_embeddings(texts, model="text-embedding-ada-002", retry_attempts=3):
+    """Generates embeddings for a batch of texts using OpenAI API."""
+    embeddings = []
+    for text in texts:
+        attempt = 0
+        while attempt < retry_attempts:
+            try:
+                # Call the API for each text
+                response = openai.Embedding.create(input=[text], model=model)
+                embeddings.append(response['data'][0]['embedding'])
+                break
+            except openai.error.RateLimitError:
+                print(f"Rate limit reached for text: {text}. Retrying...")
+                time.sleep(5)  # Wait before retrying
+                attempt += 1
+            except openai.error.InvalidRequestError as e:
+                print(f"Invalid input for text: {text}. Skipping. Error: {e}")
+                embeddings.append(None)  # Append None for invalid input
+                break
+            except Exception as e:
+                print(f"Unexpected error for text: {text}. Error: {e}")
+                embeddings.append(None)
+                break
+        else:
+            print(f"Failed to process text after {retry_attempts} attempts: {text}")
+            embeddings.append(None)
+    return embeddings
+
+
+
+def store_sds_documents_to_chromadb(df, collection):
+    """Stores each section of each document in ChromaDB with embeddings and metadata."""
     print("Storing SDS documents to ChromaDB...")
     successful_stores = 0
     failed_stores = 0
-    for index, row in df.iterrows():
-        for section in row['processed_metadata']:
-            page_content = section['page_content']
-            metadata = section['metadata']
-            embedding = get_embedding(page_content)
-            
-            if embedding:
-                collection.add(
-                    embeddings=[embedding],
-                    documents=[page_content],
-                    ids=[f"{index}_{metadata['section_id']}"],
-                    metadatas=[metadata]
-                )
-                successful_stores += 1
-            else:
-                failed_stores += 1
-                print(f"Failed to store document with metadata: {metadata}")
 
-    print(f"All sections stored in ChromaDB with embeddings. Successes: {successful_stores}, Failures: {failed_stores}")
+    for index, row in df.iterrows():
+        for section in row.get('processed_metadata', []):
+            try:
+                page_content = section.get('page_content', '').strip()
+                metadata = section.get('metadata', {})
+                
+                if not page_content or not metadata:
+                    print(f"Missing content or metadata in section: {section}")
+                    failed_stores += 1
+                    continue
+
+                # Generate embedding for the content
+                embedding = get_embeddings([page_content])[0]
+                
+                if embedding:
+                    collection.add(
+                        embeddings=[embedding],
+                        documents=[page_content],
+                        ids=[f"{index}_{metadata.get('section_id', 'unknown')}"],
+                        metadatas=[metadata]
+                    )
+                    successful_stores += 1
+                else:
+                    print(f"Failed to generate embedding for section: {section}")
+                    failed_stores += 1
+            except Exception as e:
+                print(f"Unexpected error storing section: {section}. Error: {e}")
+                failed_stores += 1
+
+    print(f"Storage complete. Successes: {successful_stores}, Failures: {failed_stores}")
+
 
 # Multi-parameter retrieval function with similarity search
 def multi_retrieve_section(product_name, query_parameters=None, supplier=None, section_id=None):
