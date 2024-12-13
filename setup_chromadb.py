@@ -4,7 +4,7 @@ import chromadb
 from chroma_retrieval import get_embeddings, generate_processed_metadata, store_sds_documents_to_chromadb
 
 # Set up OpenAI API key
-os.environ['OPENAI_API_KEY'] = 'enter_api_key'
+os.environ['OPENAI_API_KEY'] = 'ENTER_API_KEY_HERE'
 
 # Initialize ChromaDB client
 print("Initializing ChromaDB client...")
