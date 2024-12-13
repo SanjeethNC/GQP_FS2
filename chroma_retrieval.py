@@ -137,8 +137,8 @@ def store_sds_documents_to_chromadb(df, collection):
 
     print(f"Storage complete. Successes: {successful_stores}, Failures: {failed_stores}")
 
-
-# Multi-parameter retrieval function with similarity search
+# NOTE: This is not being used in the API. We are using contextual compression included in the app.py code
+# Multi-parameter retrieval function with similarity search 
 def multi_retrieve_section(product_name, query_parameters=None, supplier=None, section_id=None):
     """Retrieves relevant sections based on product_name, optional supplier, section_id, and query_parameters."""
     print(f"Retrieving sections for product '{product_name}' with query parameters {query_parameters}...")
